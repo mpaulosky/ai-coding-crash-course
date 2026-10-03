@@ -35,13 +35,18 @@ const COMMENT_LANGS = [
   "plaintext",
 ];
 
-let highlighter: Highlighter | null = null;
+// Cache the promise, not the resolved instance: loaders render a whole thread
+// with Promise.all, and every call would otherwise see null and build its own.
+let highlighter: Promise<Highlighter> | null = null;
 
-async function getHighlighter(): Promise<Highlighter> {
+function getHighlighter(): Promise<Highlighter> {
   if (!highlighter) {
-    highlighter = await createHighlighter({
+    highlighter = createHighlighter({
       themes: ["github-dark"],
       langs: COMMENT_LANGS,
+    }).catch((error) => {
+      highlighter = null;
+      throw error;
     });
   }
   return highlighter;
@@ -64,11 +69,15 @@ function escapeHtml(value: string): string {
 function safeHref(href: string | null): string | null {
   if (!href) return null;
 
-  const trimmed = href.trim();
+  // Browsers drop tabs and newlines anywhere in a URL before parsing, so strip
+  // them first or "/\t/evil.test" would slip past the check below as "//…".
+  const trimmed = href.replace(/[\t\n\r]/g, "").trim();
 
-  // Relative links stay on our own origin, so they're safe.
-  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
-    return trimmed;
+  // Relative links stay on our own origin, so they're safe — unless the second
+  // character is / or \. Browsers treat \ as a path separator, so both "//x"
+  // and "/\x" are protocol-relative and resolve off-origin.
+  if (trimmed.startsWith("/")) {
+    return /^\/[/\\]/.test(trimmed) ? null : trimmed;
   }
 
   try {

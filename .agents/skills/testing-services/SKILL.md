@@ -29,12 +29,11 @@ beforeEach(() => {
 });
 ```
 
-Two details carry the whole pattern, and both fail silently when missed:
+**The getter** carries the pattern, and fails silently when missed. `beforeEach` rebinds `testDb` to a fresh database on every test; a plain `{ db: testDb }` captures the value once at mock time — every test after the first runs against a stale, closed database.
 
-- **The getter.** `beforeEach` rebinds `testDb` to a fresh database on every test. A plain `{ db: testDb }` captures the value once at mock time — every test after the first runs against a stale, closed database.
-- **The import order.** `vi.mock` is hoisted, but a static import written *above* it still reads more naturally to a human and is the common edit. Move that import above the mock and the service captures the real `data.db` — the tests pass, and they pass against your development data.
+The import order is convention only. Vitest hoists `vi.mock` above every static import, so an import written above the mock still gets the test database; keep it below so the file reads in the order it runs.
 
-If a test run leaves rows in `data.db`, one of those two is wrong.
+If a test run leaves rows in `data.db`, the file has no `vi.mock("~/db", …)` at all.
 
 ## The test database
 

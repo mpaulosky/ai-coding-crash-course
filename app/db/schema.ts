@@ -273,6 +273,9 @@ export const courseRatings = sqliteTable(
       table.userId,
       table.courseId
     ),
+    // The unique index leads with user_id, so it can't serve the per-course
+    // summary and list queries.
+    index("course_ratings_course_idx").on(table.courseId),
   ]
 );
 
@@ -280,9 +283,10 @@ export const comments = sqliteTable(
   "comments",
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
+    // Cascade so deleteLesson still works once a lesson has a discussion.
     lessonId: integer("lesson_id")
       .notNull()
-      .references(() => lessons.id),
+      .references(() => lessons.id, { onDelete: "cascade" }),
     userId: integer("user_id")
       .notNull()
       .references(() => users.id),

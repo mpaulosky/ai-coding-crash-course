@@ -101,7 +101,11 @@ function CommentForm({
 
       <div className="flex items-center gap-3">
         <Button type="submit" size="sm" disabled={submitting || empty || tooLong}>
-          {submitting ? "Posting..." : submitLabel}
+          {submitting
+            ? intent === "edit-comment"
+              ? "Saving..."
+              : "Posting..."
+            : submitLabel}
         </Button>
 
         {onDone && (

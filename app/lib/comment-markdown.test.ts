@@ -119,6 +119,26 @@ describe("renderComment", () => {
       expect(html).not.toContain("<a ");
     });
 
+    it("downgrades a backslash protocol-relative link", async () => {
+      const html = await renderComment("[click](/\\evil.test)");
+
+      expect(html).not.toContain("<a ");
+    });
+
+    it("downgrades a protocol-relative link split by a tab", async () => {
+      const html = await renderComment("[click](</\t/evil.test>)");
+
+      expect(html).not.toContain("<a ");
+    });
+
+    it("renders concurrent comments with a shared highlighter", async () => {
+      const htmls = await Promise.all(
+        Array.from({ length: 5 }, () => renderComment("```ts\nconst x = 1;\n```"))
+      );
+
+      for (const html of htmls) expect(html).toContain("shiki");
+    });
+
     it("escapes quotes in a link title", async () => {
       const html = await renderComment(
         '[x](https://example.test "a" onmouseover="alert(1)")'
