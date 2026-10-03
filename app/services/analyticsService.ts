@@ -1,5 +1,6 @@
 import {
   and,
+  asc,
   countDistinct,
   eq,
   gte,
@@ -138,10 +139,28 @@ export type CourseBreakdownRow = {
   activeStudents: number;
 };
 
+export function getCourseBreakdown(instructorId: number): CourseBreakdownRow[] {
+  return breakdownRows(instructorId);
+}
+
+/** One course's breakdown row, or undefined unless it's an included course of the instructor. */
+export function getCourseSummary(
+  instructorId: number,
+  courseId: number
+): CourseBreakdownRow | undefined {
+  return breakdownRows(instructorId, courseId)[0];
+}
+
 // Each figure is aggregated per course in its own query, then merged — joining
 // purchases, enrollments and ratings together would multiply rows.
-export function getCourseBreakdown(instructorId: number): CourseBreakdownRow[] {
-  const included = isIncludedCourseOf(instructorId);
+function breakdownRows(
+  instructorId: number,
+  courseId?: number
+): CourseBreakdownRow[] {
+  const included = and(
+    isIncludedCourseOf(instructorId),
+    courseId === undefined ? undefined : eq(courses.id, courseId)
+  );
 
   const courseRows = db
     .select({ id: courses.id, title: courses.title, status: courses.status })
@@ -406,4 +425,81 @@ function earliestActivity(instructorId: number) {
     (at): at is string => !!at
   );
   return candidates.length > 0 ? candidates.sort()[0] : null;
+}
+
+// ─── Funnel ───
+// How far students get through a course: for each lesson in course order, the
+// enrolled students who completed it. Percentages are of everyone enrolled, so
+// students who never started show up as drop at the first lesson.
+
+export type FunnelStep = {
+  moduleId: number;
+  moduleTitle: string;
+  lessonId: number;
+  lessonTitle: string;
+  completed: number;
+  /** Of enrolled students, 0–100. Null when nobody is enrolled. */
+  percent: number | null;
+  /** Percentage points lost since the previous lesson (or since 100% for the first). */
+  drop: number | null;
+};
+
+export function getCourseFunnel(courseId: number) {
+  const enrolled =
+    db
+      .select({ total: sql<number>`count(*)` })
+      .from(enrollments)
+      .where(eq(enrollments.courseId, courseId))
+      .get()?.total ?? 0;
+
+  const lessonCounts = db
+    .select({
+      moduleId: modules.id,
+      moduleTitle: modules.title,
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      // Progress only counts for students enrolled in this course
+      completed: countDistinct(enrollments.userId),
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .leftJoin(
+      lessonProgress,
+      and(
+        eq(lessonProgress.lessonId, lessons.id),
+        eq(lessonProgress.status, LessonProgressStatus.Completed)
+      )
+    )
+    .leftJoin(
+      enrollments,
+      and(
+        eq(enrollments.userId, lessonProgress.userId),
+        eq(enrollments.courseId, modules.courseId)
+      )
+    )
+    .where(eq(modules.courseId, courseId))
+    .groupBy(lessons.id)
+    .orderBy(asc(modules.position), asc(lessons.position))
+    .all();
+
+  let previousPercent = 100;
+  const steps: FunnelStep[] = lessonCounts.map((lesson) => {
+    if (enrolled === 0) return { ...lesson, percent: null, drop: null };
+    const percent = (lesson.completed * 100) / enrolled;
+    const drop = previousPercent - percent;
+    previousPercent = percent;
+    return { ...lesson, percent, drop };
+  });
+
+  // The first of any tied lessons; none when no lesson loses anyone
+  let largestDrop: FunnelStep | null = null;
+  for (const step of steps) {
+    if ((step.drop ?? 0) > (largestDrop?.drop ?? 0)) largestDrop = step;
+  }
+
+  return {
+    enrolled,
+    steps,
+    largestDropLessonId: largestDrop?.lessonId ?? null,
+  };
 }

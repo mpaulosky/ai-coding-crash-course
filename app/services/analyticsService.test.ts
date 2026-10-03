@@ -14,6 +14,8 @@ vi.mock("~/db", () => ({
 // Import after mock so the module picks up our test db
 import {
   getCourseBreakdown,
+  getCourseFunnel,
+  getCourseSummary,
   getInstructorOverview,
   getRevenueInRange,
   getRevenueTrend,
@@ -626,6 +628,213 @@ describe("analyticsService", () => {
       expect(getRevenueTrend(base.instructor.id, "all")).toEqual([
         { bucketStart: "2026-06-01", revenue: 0, enrollments: 0 },
       ]);
+    });
+  });
+
+  describe("getCourseSummary", () => {
+    it("matches the course's row in the breakdown", () => {
+      const archived = createCourse(schema.CourseStatus.Archived);
+      purchase(archived.id, 1500);
+      enroll(archived.id, true);
+      enroll(archived.id);
+      rate(archived.id, 3);
+      purchase(base.course.id, 100);
+
+      const summary = getCourseSummary(base.instructor.id, archived.id);
+
+      expect(summary).toEqual({
+        id: archived.id,
+        title: archived.title,
+        status: schema.CourseStatus.Archived,
+        revenue: 1500,
+        enrollments: 2,
+        completionRate: 0.5,
+        averageRating: 3,
+        ratingCount: 1,
+        activeStudents: 0,
+      });
+    });
+
+    it("has nothing for a draft or another instructor's course", () => {
+      const other = testDb
+        .insert(schema.users)
+        .values({
+          name: "Other Instructor",
+          email: "other@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+      const draft = createCourse(schema.CourseStatus.Draft);
+      const othersCourse = createCourse(
+        schema.CourseStatus.Published,
+        other.id
+      );
+
+      expect(getCourseSummary(base.instructor.id, draft.id)).toBeUndefined();
+      expect(
+        getCourseSummary(base.instructor.id, othersCourse.id)
+      ).toBeUndefined();
+    });
+  });
+
+  describe("getCourseFunnel", () => {
+    function enrollStudent(courseId: number) {
+      const student = createStudent();
+      testDb
+        .insert(schema.enrollments)
+        .values({ userId: student.id, courseId })
+        .run();
+      return student;
+    }
+
+    function addLesson(moduleId: number, title: string, position: number) {
+      return testDb
+        .insert(schema.lessons)
+        .values({ moduleId, title, position })
+        .returning()
+        .get();
+    }
+
+    function addModule(title: string, position: number) {
+      return testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title, position })
+        .returning()
+        .get();
+    }
+
+    it("lists lessons by module then lesson position with completion percentages", () => {
+      // Inserted out of order to show ordering comes from positions
+      const second = addModule("Second", 2);
+      const first = addModule("First", 1);
+      const b2 = addLesson(second.id, "B2", 2);
+      const a1 = addLesson(first.id, "A1", 1);
+      const b1 = addLesson(second.id, "B1", 1);
+      const a2 = addLesson(first.id, "A2", 2);
+      const students = [1, 2, 3, 4].map(() => enrollStudent(base.course.id));
+      for (const student of students.slice(0, 3)) {
+        completeLesson(student.id, a1.id, daysAgo(10));
+      }
+      for (const student of students.slice(0, 2)) {
+        completeLesson(student.id, a2.id, daysAgo(10));
+        completeLesson(student.id, b1.id, daysAgo(10));
+      }
+      completeLesson(students[0].id, b2.id, daysAgo(10));
+
+      const funnel = getCourseFunnel(base.course.id);
+
+      expect(funnel.enrolled).toBe(4);
+      expect(funnel.steps).toEqual([
+        {
+          moduleId: first.id,
+          moduleTitle: "First",
+          lessonId: a1.id,
+          lessonTitle: "A1",
+          completed: 3,
+          percent: 75,
+          drop: 25,
+        },
+        {
+          moduleId: first.id,
+          moduleTitle: "First",
+          lessonId: a2.id,
+          lessonTitle: "A2",
+          completed: 2,
+          percent: 50,
+          drop: 25,
+        },
+        {
+          moduleId: second.id,
+          moduleTitle: "Second",
+          lessonId: b1.id,
+          lessonTitle: "B1",
+          completed: 2,
+          percent: 50,
+          drop: 0,
+        },
+        {
+          moduleId: second.id,
+          moduleTitle: "Second",
+          lessonId: b2.id,
+          lessonTitle: "B2",
+          completed: 1,
+          percent: 25,
+          drop: 25,
+        },
+      ]);
+    });
+
+    it("counts each enrolled student once, and only completed progress", () => {
+      const lesson = addLesson(addModule("Only", 1).id, "L1", 1);
+      const twice = enrollStudent(base.course.id);
+      const inProgress = enrollStudent(base.course.id);
+      completeLesson(twice.id, lesson.id, daysAgo(3));
+      completeLesson(twice.id, lesson.id, daysAgo(2));
+      testDb
+        .insert(schema.lessonProgress)
+        .values({
+          userId: inProgress.id,
+          lessonId: lesson.id,
+          status: schema.LessonProgressStatus.InProgress,
+        })
+        .run();
+      // Completed, but not enrolled in the course
+      completeLesson(createStudent().id, lesson.id, daysAgo(1));
+
+      const [step] = getCourseFunnel(base.course.id).steps;
+
+      expect(step).toMatchObject({ completed: 1, percent: 50, drop: 50 });
+    });
+
+    it("calls out the lesson with the largest drop", () => {
+      const mod = addModule("Only", 1);
+      const l1 = addLesson(mod.id, "L1", 1);
+      const l2 = addLesson(mod.id, "L2", 2);
+      const l3 = addLesson(mod.id, "L3", 3);
+      const students = [1, 2, 3, 4, 5].map(() => enrollStudent(base.course.id));
+      // 80% → 60% → 20%: drops of 20, 20 and 40 points
+      for (const student of students.slice(0, 4))
+        completeLesson(student.id, l1.id, daysAgo(1));
+      for (const student of students.slice(0, 3))
+        completeLesson(student.id, l2.id, daysAgo(1));
+      completeLesson(students[0].id, l3.id, daysAgo(1));
+
+      expect(getCourseFunnel(base.course.id).largestDropLessonId).toBe(l3.id);
+    });
+
+    it("picks the earliest lesson when drops tie", () => {
+      const mod = addModule("Only", 1);
+      const l1 = addLesson(mod.id, "L1", 1);
+      addLesson(mod.id, "L2", 2);
+      const students = [1, 2].map(() => enrollStudent(base.course.id));
+      completeLesson(students[0].id, l1.id, daysAgo(1));
+
+      expect(getCourseFunnel(base.course.id).largestDropLessonId).toBe(l1.id);
+    });
+
+    it("calls out no lesson when nobody drops", () => {
+      const lesson = addLesson(addModule("Only", 1).id, "L1", 1);
+      completeLesson(enrollStudent(base.course.id).id, lesson.id, daysAgo(1));
+
+      expect(getCourseFunnel(base.course.id).largestDropLessonId).toBeNull();
+    });
+
+    it("handles a course with no enrollments", () => {
+      const lesson = addLesson(addModule("Only", 1).id, "L1", 1);
+
+      expect(getCourseFunnel(base.course.id)).toEqual({
+        enrolled: 0,
+        steps: [
+          expect.objectContaining({
+            lessonId: lesson.id,
+            completed: 0,
+            percent: null,
+            drop: null,
+          }),
+        ],
+        largestDropLessonId: null,
+      });
     });
   });
 });

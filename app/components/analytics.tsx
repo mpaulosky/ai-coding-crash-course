@@ -2,8 +2,11 @@ import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Bar,
+  BarChart,
   CartesianGrid,
+  Cell,
   ComposedChart,
+  LabelList,
   Legend,
   Line,
   ResponsiveContainer,
@@ -14,7 +17,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { CourseStatus } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
-import type { TrendPoint } from "~/services/analyticsService";
+import type { FunnelStep, TrendPoint } from "~/services/analyticsService";
 
 // ─── Analytics Display ───
 // Cards and formatters shared by the instructor analytics pages.
@@ -140,6 +143,65 @@ export function TrendChart({
           type="monotone"
         />
       </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
+function formatStep(step: FunnelStep) {
+  const percent = `${Math.round(step.percent ?? 0)}%`;
+  const drop = Math.round(step.drop ?? 0);
+  return `${step.completed} (${percent})${drop > 0 ? ` · −${drop} pts` : ""}`;
+}
+
+/**
+ * One module's lessons as horizontal bars of the share of enrolled students who
+ * completed each. The lesson with the largest drop is drawn in the alert color.
+ */
+export function FunnelChart({
+  steps,
+  largestDropLessonId,
+}: {
+  steps: FunnelStep[];
+  largestDropLessonId: number | null;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={steps.length * 44 + 16}>
+      <BarChart
+        data={steps}
+        layout="vertical"
+        margin={{ top: 0, right: 160, left: 8, bottom: 0 }}
+      >
+        <XAxis type="number" domain={[0, 100]} hide />
+        <YAxis
+          type="category"
+          dataKey="lessonTitle"
+          width={220}
+          tick={{ fontSize: 13 }}
+          tickLine={false}
+          axisLine={false}
+        />
+        <Bar dataKey="percent" radius={[0, 4, 4, 0]} barSize={24}>
+          {steps.map((step) => (
+            <Cell
+              key={step.lessonId}
+              fill={
+                step.lessonId === largestDropLessonId
+                  ? "var(--color-destructive)"
+                  : "var(--color-chart-2)"
+              }
+            />
+          ))}
+          <LabelList
+            dataKey="lessonId"
+            position="right"
+            fontSize={12}
+            formatter={(lessonId) => {
+              const step = steps.find((s) => s.lessonId === lessonId);
+              return step ? formatStep(step) : "";
+            }}
+          />
+        </Bar>
+      </BarChart>
     </ResponsiveContainer>
   );
 }
