@@ -1,12 +1,19 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, countDistinct, eq, gte, inArray, sql } from "drizzle-orm";
+import { union } from "drizzle-orm/sqlite-core";
 import { db } from "~/db";
 import {
   CourseStatus,
   courseRatings,
   courses,
   enrollments,
+  LessonProgressStatus,
+  lessonProgress,
+  lessons,
+  modules,
   purchases,
+  videoWatchEvents,
 } from "~/db/schema";
+import { getUnansweredQuestions } from "~/services/commentService";
 
 // ─── Analytics Service ───
 // Instructor analytics, computed on demand with SQL aggregates.
@@ -21,6 +28,48 @@ function isIncludedCourseOf(instructorId: number) {
     eq(courses.instructorId, instructorId),
     inArray(courses.status, INCLUDED_STATUSES)
   );
+}
+
+const ACTIVE_WINDOW_DAYS = 30;
+
+/**
+ * (student, course) pairs with activity in the last 30 days: a completed lesson
+ * or a video watch event. Lesson progress only records a time on completion, so
+ * watch events are what catch a student partway through a lesson.
+ */
+function recentActivity(instructorId: number) {
+  const cutoff = new Date(
+    Date.now() - ACTIVE_WINDOW_DAYS * 86_400_000
+  ).toISOString();
+
+  const completions = db
+    .select({ userId: lessonProgress.userId, courseId: courses.id })
+    .from(lessonProgress)
+    .innerJoin(lessons, eq(lessonProgress.lessonId, lessons.id))
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(courses, eq(modules.courseId, courses.id))
+    .where(
+      and(
+        isIncludedCourseOf(instructorId),
+        eq(lessonProgress.status, LessonProgressStatus.Completed),
+        gte(lessonProgress.completedAt, cutoff)
+      )
+    );
+
+  const watches = db
+    .select({ userId: videoWatchEvents.userId, courseId: courses.id })
+    .from(videoWatchEvents)
+    .innerJoin(lessons, eq(videoWatchEvents.lessonId, lessons.id))
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(courses, eq(modules.courseId, courses.id))
+    .where(
+      and(
+        isIncludedCourseOf(instructorId),
+        gte(videoWatchEvents.createdAt, cutoff)
+      )
+    );
+
+  return union(completions, watches).as("recent_activity");
 }
 
 export function getInstructorOverview(instructorId: number) {
@@ -47,6 +96,12 @@ export function getInstructorOverview(instructorId: number) {
     .where(isIncludedCourseOf(instructorId))
     .get();
 
+  const activity = recentActivity(instructorId);
+  const active = db
+    .select({ total: countDistinct(activity.userId) })
+    .from(activity)
+    .get();
+
   const totalStudents = enrollment?.total ?? 0;
   const completed = enrollment?.completed ?? 0;
 
@@ -56,6 +111,9 @@ export function getInstructorOverview(instructorId: number) {
     totalStudents,
     // Null rather than 0 when nobody is enrolled — there is no rate to report.
     completionRate: totalStudents > 0 ? completed / totalStudents : null,
+    activeStudents: active?.total ?? 0,
+    // The questions queue owns what "unanswered" means; count what it lists.
+    unansweredQuestions: getUnansweredQuestions(instructorId).length,
   };
 }
 
@@ -68,6 +126,7 @@ export type CourseBreakdownRow = {
   completionRate: number | null;
   averageRating: number | null;
   ratingCount: number;
+  activeStudents: number;
 };
 
 // Each figure is aggregated per course in its own query, then merged — joining
@@ -125,6 +184,19 @@ export function getCourseBreakdown(instructorId: number): CourseBreakdownRow[] {
       .map((row) => [row.courseId, row])
   );
 
+  const activity = recentActivity(instructorId);
+  const activeByCourse = new Map(
+    db
+      .select({
+        courseId: activity.courseId,
+        total: countDistinct(activity.userId),
+      })
+      .from(activity)
+      .groupBy(activity.courseId)
+      .all()
+      .map((row) => [row.courseId, row.total])
+  );
+
   return courseRows
     .map((course) => {
       const enrollment = enrollmentByCourse.get(course.id);
@@ -138,6 +210,7 @@ export function getCourseBreakdown(instructorId: number): CourseBreakdownRow[] {
         completionRate: enrolled > 0 ? enrollment!.completed / enrolled : null,
         averageRating: rating?.average ?? null,
         ratingCount: rating?.count ?? 0,
+        activeStudents: activeByCourse.get(course.id) ?? 0,
       };
     })
     .sort((a, b) => b.revenue - a.revenue);

@@ -14,7 +14,9 @@ import {
   BarChart3,
   CheckCircle2,
   DollarSign,
+  MessageCircleQuestionMark,
   Plus,
+  Activity,
   Users,
 } from "lucide-react";
 import {
@@ -126,7 +128,7 @@ export default function InstructorAnalytics({
           </Link>
         </div>
       ) : (
-        <div className="grid gap-6 sm:grid-cols-3">
+        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           <StatCard
             title="Gross revenue"
             value={formatRevenue(overview.grossRevenue)}
@@ -141,6 +143,24 @@ export default function InstructorAnalytics({
             title="Completion rate"
             value={formatRate(overview.completionRate)}
             icon={CheckCircle2}
+          />
+          <StatCard
+            title="Active students (30 days)"
+            value={overview.activeStudents.toLocaleString()}
+            icon={Activity}
+          />
+          <StatCard
+            title="Unanswered questions"
+            value={overview.unansweredQuestions.toLocaleString()}
+            icon={MessageCircleQuestionMark}
+            footer={
+              <Link
+                to="/instructor/questions"
+                className="text-primary hover:underline"
+              >
+                View questions
+              </Link>
+            }
           />
         </div>
       )}
@@ -162,6 +182,7 @@ export default function InstructorAnalytics({
                       "Enrollments",
                       "Completion",
                       "Rating",
+                      "Active (30d)",
                     ].map((heading) => (
                       <th
                         key={heading}
@@ -193,6 +214,9 @@ export default function InstructorAnalytics({
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {formatRating(course.averageRating, course.ratingCount)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {course.activeStudents.toLocaleString()}
                       </td>
                     </tr>
                   ))}

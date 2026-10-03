@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
 
@@ -78,10 +78,53 @@ function rate(courseId: number, rating: number) {
     .run();
 }
 
+// "Now" for tests that depend on the clock
+const NOW = new Date("2026-06-15T12:00:00.000Z");
+
+function daysAgo(days: number) {
+  return new Date(NOW.getTime() - days * 86_400_000).toISOString();
+}
+
+function createLesson(courseId: number, modulePosition = 1, position = 1) {
+  const mod = testDb
+    .insert(schema.modules)
+    .values({ courseId, title: `Module ${modulePosition}`, position: modulePosition })
+    .returning()
+    .get();
+  return testDb
+    .insert(schema.lessons)
+    .values({ moduleId: mod.id, title: `Lesson ${position}`, position })
+    .returning()
+    .get();
+}
+
+function completeLesson(userId: number, lessonId: number, completedAt: string) {
+  testDb
+    .insert(schema.lessonProgress)
+    .values({
+      userId,
+      lessonId,
+      status: schema.LessonProgressStatus.Completed,
+      completedAt,
+    })
+    .run();
+}
+
+function watch(userId: number, lessonId: number, createdAt: string) {
+  testDb
+    .insert(schema.videoWatchEvents)
+    .values({ userId, lessonId, eventType: "play", positionSeconds: 0, createdAt })
+    .run();
+}
+
 describe("analyticsService", () => {
   beforeEach(() => {
     testDb = createTestDb();
     base = seedBaseData(testDb);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe("getInstructorOverview", () => {
@@ -224,6 +267,8 @@ describe("analyticsService", () => {
         grossRevenue: 0,
         totalStudents: 0,
         completionRate: null,
+        activeStudents: 0,
+        unansweredQuestions: 0,
       });
     });
   });
@@ -250,6 +295,7 @@ describe("analyticsService", () => {
         completionRate: 0.25,
         averageRating: 4.5,
         ratingCount: 2,
+        activeStudents: 0,
       });
     });
 
@@ -299,6 +345,141 @@ describe("analyticsService", () => {
       expect(rows.map((row) => row.id).sort()).toEqual(
         [base.course.id, archived.id].sort()
       );
+    });
+  });
+
+  describe("active students", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    it("counts a student who completed a lesson in the last 30 days", () => {
+      const lesson = createLesson(base.course.id);
+      completeLesson(createStudent().id, lesson.id, daysAgo(29));
+
+      expect(getInstructorOverview(base.instructor.id).activeStudents).toBe(1);
+    });
+
+    it("counts a student who only watched a video in the last 30 days", () => {
+      const lesson = createLesson(base.course.id);
+      watch(createStudent().id, lesson.id, daysAgo(2));
+
+      expect(getInstructorOverview(base.instructor.id).activeStudents).toBe(1);
+    });
+
+    it("ignores activity older than 30 days", () => {
+      const lesson = createLesson(base.course.id);
+      completeLesson(createStudent().id, lesson.id, daysAgo(31));
+      watch(createStudent().id, lesson.id, daysAgo(30.01));
+
+      expect(getInstructorOverview(base.instructor.id).activeStudents).toBe(0);
+    });
+
+    it("counts a student once across activity types and courses", () => {
+      const archived = createCourse(schema.CourseStatus.Archived);
+      const lesson = createLesson(base.course.id);
+      const archivedLesson = createLesson(archived.id);
+      const student = createStudent();
+      completeLesson(student.id, lesson.id, daysAgo(1));
+      watch(student.id, lesson.id, daysAgo(1));
+      watch(student.id, archivedLesson.id, daysAgo(3));
+
+      expect(getInstructorOverview(base.instructor.id).activeStudents).toBe(1);
+    });
+
+    it("ignores activity in drafts and other instructors' courses", () => {
+      const other = testDb
+        .insert(schema.users)
+        .values({
+          name: "Other Instructor",
+          email: "other@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+      const draftLesson = createLesson(createCourse(schema.CourseStatus.Draft).id);
+      const othersLesson = createLesson(
+        createCourse(schema.CourseStatus.Published, other.id).id
+      );
+      completeLesson(createStudent().id, draftLesson.id, daysAgo(1));
+      watch(createStudent().id, othersLesson.id, daysAgo(1));
+
+      expect(getInstructorOverview(base.instructor.id).activeStudents).toBe(0);
+    });
+
+    it("ignores lessons that are only in progress", () => {
+      const lesson = createLesson(base.course.id);
+      testDb
+        .insert(schema.lessonProgress)
+        .values({
+          userId: createStudent().id,
+          lessonId: lesson.id,
+          status: schema.LessonProgressStatus.InProgress,
+          completedAt: daysAgo(1),
+        })
+        .run();
+
+      expect(getInstructorOverview(base.instructor.id).activeStudents).toBe(0);
+    });
+
+    it("counts active students per course in the breakdown", () => {
+      const archived = createCourse(schema.CourseStatus.Archived);
+      const lesson = createLesson(base.course.id);
+      const archivedLesson = createLesson(archived.id);
+      const both = createStudent();
+      completeLesson(both.id, lesson.id, daysAgo(1));
+      watch(both.id, archivedLesson.id, daysAgo(1));
+      watch(createStudent().id, lesson.id, daysAgo(5));
+      watch(createStudent().id, archivedLesson.id, daysAgo(40));
+
+      const rows = getCourseBreakdown(base.instructor.id);
+      const activeById = Object.fromEntries(
+        rows.map((row) => [row.id, row.activeStudents])
+      );
+
+      expect(activeById).toEqual({ [base.course.id]: 2, [archived.id]: 1 });
+    });
+  });
+
+  describe("unanswered questions", () => {
+    function ask(userId: number, lessonId: number, parentId: number | null = null) {
+      return testDb
+        .insert(schema.comments)
+        .values({ userId, lessonId, parentId, body: "How does this work?" })
+        .returning()
+        .get();
+    }
+
+    it("counts student questions without a reply from the instructor", () => {
+      const lesson = createLesson(base.course.id);
+      ask(base.user.id, lesson.id);
+      ask(createStudent().id, lesson.id);
+      const answered = ask(createStudent().id, lesson.id);
+      ask(base.instructor.id, lesson.id, answered.id);
+      // A reply from another student doesn't answer the question
+      const peerReplied = ask(createStudent().id, lesson.id);
+      ask(base.user.id, lesson.id, peerReplied.id);
+
+      expect(getInstructorOverview(base.instructor.id).unansweredQuestions).toBe(3);
+    });
+
+    it("ignores questions on other instructors' courses", () => {
+      const other = testDb
+        .insert(schema.users)
+        .values({
+          name: "Other Instructor",
+          email: "other@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+      const othersLesson = createLesson(
+        createCourse(schema.CourseStatus.Published, other.id).id
+      );
+      ask(base.user.id, othersLesson.id);
+
+      expect(getInstructorOverview(base.instructor.id).unansweredQuestions).toBe(0);
     });
   });
 });
