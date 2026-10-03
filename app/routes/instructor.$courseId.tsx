@@ -54,6 +54,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import {
   ArrowLeft,
+  BarChart3,
   BookOpen,
   Clock,
   Eye,
@@ -185,7 +186,19 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   const quizCount = lessonQuizzes.length;
 
-  return { course, lessonCount, enrollmentCount, students, quizCount };
+  // Analytics are the owning instructor's, and drafts have none
+  const canViewAnalytics =
+    course.instructorId === currentUserId &&
+    course.status !== CourseStatus.Draft;
+
+  return {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    canViewAnalytics,
+  };
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
@@ -984,7 +997,14 @@ function statusBadgeColor(status: string) {
 export default function InstructorCourseEditor({
   loaderData,
 }: Route.ComponentProps) {
-  const { course, lessonCount, enrollmentCount, students, quizCount } = loaderData;
+  const {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    canViewAnalytics,
+  } = loaderData;
   const statusFetcher = useFetcher();
   const reorderFetcher = useFetcher();
   const lessonReorderFetcher = useFetcher();
@@ -1172,6 +1192,15 @@ export default function InstructorCourseEditor({
           <span className="text-xs text-muted-foreground">
             Slug: /courses/{course.slug}
           </span>
+          {canViewAnalytics && (
+            <Link
+              to={`/instructor/${course.id}/analytics`}
+              className="flex items-center gap-1.5 hover:text-foreground"
+            >
+              <BarChart3 className="size-4" />
+              View analytics
+            </Link>
+          )}
         </div>
       </div>
 
