@@ -12,7 +12,12 @@ vi.mock("~/db", () => ({
 }));
 
 // Import after mock so the module picks up our test db
-import { getCourseBreakdown, getInstructorOverview } from "./analyticsService";
+import {
+  getCourseBreakdown,
+  getInstructorOverview,
+  getRevenueInRange,
+  getRevenueTrend,
+} from "./analyticsService";
 
 let studentCount = 0;
 
@@ -49,23 +54,25 @@ function createCourse(
     .get();
 }
 
-function purchase(courseId: number, amountPaid: number) {
+function purchase(courseId: number, amountPaid: number, createdAt?: string) {
   testDb
     .insert(schema.purchases)
     .values({
       userId: createStudent().id,
       courseId,
       amountPaid,
+      createdAt,
     })
     .run();
 }
 
-function enroll(courseId: number, completed = false) {
+function enroll(courseId: number, completed = false, enrolledAt?: string) {
   testDb
     .insert(schema.enrollments)
     .values({
       userId: createStudent().id,
       courseId,
+      enrolledAt,
       completedAt: completed ? new Date().toISOString() : null,
     })
     .run();
@@ -88,7 +95,11 @@ function daysAgo(days: number) {
 function createLesson(courseId: number, modulePosition = 1, position = 1) {
   const mod = testDb
     .insert(schema.modules)
-    .values({ courseId, title: `Module ${modulePosition}`, position: modulePosition })
+    .values({
+      courseId,
+      title: `Module ${modulePosition}`,
+      position: modulePosition,
+    })
     .returning()
     .get();
   return testDb
@@ -113,7 +124,13 @@ function completeLesson(userId: number, lessonId: number, completedAt: string) {
 function watch(userId: number, lessonId: number, createdAt: string) {
   testDb
     .insert(schema.videoWatchEvents)
-    .values({ userId, lessonId, eventType: "play", positionSeconds: 0, createdAt })
+    .values({
+      userId,
+      lessonId,
+      eventType: "play",
+      positionSeconds: 0,
+      createdAt,
+    })
     .run();
 }
 
@@ -143,7 +160,11 @@ describe("analyticsService", () => {
       const team = testDb.insert(schema.teams).values({}).returning().get();
       const teamPurchase = testDb
         .insert(schema.purchases)
-        .values({ userId: buyer.id, courseId: base.course.id, amountPaid: 25000 })
+        .values({
+          userId: buyer.id,
+          courseId: base.course.id,
+          amountPaid: 25000,
+        })
         .returning()
         .get();
       testDb
@@ -308,7 +329,11 @@ describe("analyticsService", () => {
 
       const rows = getCourseBreakdown(base.instructor.id);
 
-      expect(rows.map((row) => row.id)).toEqual([big.id, base.course.id, small.id]);
+      expect(rows.map((row) => row.id)).toEqual([
+        big.id,
+        base.course.id,
+        small.id,
+      ]);
     });
 
     it("reports no rating and no completion rate for an untouched course", () => {
@@ -335,7 +360,10 @@ describe("analyticsService", () => {
         })
         .returning()
         .get();
-      const othersCourse = createCourse(schema.CourseStatus.Published, other.id);
+      const othersCourse = createCourse(
+        schema.CourseStatus.Published,
+        other.id
+      );
       purchase(draft.id, 1000);
       purchase(othersCourse.id, 1000);
       rate(othersCourse.id, 1);
@@ -398,7 +426,9 @@ describe("analyticsService", () => {
         })
         .returning()
         .get();
-      const draftLesson = createLesson(createCourse(schema.CourseStatus.Draft).id);
+      const draftLesson = createLesson(
+        createCourse(schema.CourseStatus.Draft).id
+      );
       const othersLesson = createLesson(
         createCourse(schema.CourseStatus.Published, other.id).id
       );
@@ -443,7 +473,11 @@ describe("analyticsService", () => {
   });
 
   describe("unanswered questions", () => {
-    function ask(userId: number, lessonId: number, parentId: number | null = null) {
+    function ask(
+      userId: number,
+      lessonId: number,
+      parentId: number | null = null
+    ) {
       return testDb
         .insert(schema.comments)
         .values({ userId, lessonId, parentId, body: "How does this work?" })
@@ -461,7 +495,9 @@ describe("analyticsService", () => {
       const peerReplied = ask(createStudent().id, lesson.id);
       ask(base.user.id, lesson.id, peerReplied.id);
 
-      expect(getInstructorOverview(base.instructor.id).unansweredQuestions).toBe(3);
+      expect(
+        getInstructorOverview(base.instructor.id).unansweredQuestions
+      ).toBe(3);
     });
 
     it("ignores questions on other instructors' courses", () => {
@@ -479,7 +515,117 @@ describe("analyticsService", () => {
       );
       ask(base.user.id, othersLesson.id);
 
-      expect(getInstructorOverview(base.instructor.id).unansweredQuestions).toBe(0);
+      expect(
+        getInstructorOverview(base.instructor.id).unansweredQuestions
+      ).toBe(0);
+    });
+  });
+
+  describe("getRevenueInRange", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    it("covers today and the six days before it for the last 7 days", () => {
+      purchase(base.course.id, 100, "2026-06-09T00:00:00.000Z");
+      purchase(base.course.id, 200, "2026-06-15T11:00:00.000Z");
+      purchase(base.course.id, 400, "2026-06-08T23:59:59.999Z");
+
+      expect(getRevenueInRange(base.instructor.id, "7d")).toBe(300);
+    });
+
+    it("covers every purchase for all time, in included courses only", () => {
+      purchase(base.course.id, 100, "2020-01-01T00:00:00.000Z");
+      purchase(base.course.id, 200, daysAgo(1));
+      purchase(createCourse(schema.CourseStatus.Draft).id, 400, daysAgo(1));
+
+      expect(getRevenueInRange(base.instructor.id, "all")).toBe(300);
+    });
+  });
+
+  describe("getRevenueTrend", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    it("buckets the last 7 days by day, filling empty days with zeroes", () => {
+      purchase(base.course.id, 100, "2026-06-09T08:00:00.000Z");
+      purchase(base.course.id, 250, "2026-06-12T08:00:00.000Z");
+      purchase(base.course.id, 50, "2026-06-12T20:00:00.000Z");
+      enroll(base.course.id, false, "2026-06-12T08:00:00.000Z");
+      enroll(base.course.id, false, "2026-06-15T09:00:00.000Z");
+      // The day before the range starts
+      purchase(base.course.id, 999, "2026-06-08T23:00:00.000Z");
+      enroll(base.course.id, false, "2026-06-08T23:00:00.000Z");
+
+      expect(getRevenueTrend(base.instructor.id, "7d")).toEqual([
+        { bucketStart: "2026-06-09", revenue: 100, enrollments: 0 },
+        { bucketStart: "2026-06-10", revenue: 0, enrollments: 0 },
+        { bucketStart: "2026-06-11", revenue: 0, enrollments: 0 },
+        { bucketStart: "2026-06-12", revenue: 300, enrollments: 1 },
+        { bucketStart: "2026-06-13", revenue: 0, enrollments: 0 },
+        { bucketStart: "2026-06-14", revenue: 0, enrollments: 0 },
+        { bucketStart: "2026-06-15", revenue: 0, enrollments: 1 },
+      ]);
+    });
+
+    it("buckets the last 30 days by day", () => {
+      const trend = getRevenueTrend(base.instructor.id, "30d");
+
+      expect(trend).toHaveLength(30);
+      expect(trend[0].bucketStart).toBe("2026-05-17");
+      expect(trend[29].bucketStart).toBe("2026-06-15");
+    });
+
+    it("buckets the last 90 days by week starting Monday", () => {
+      // The range starts Wednesday 18 March, inside the week of Monday 16 March
+      purchase(base.course.id, 999, "2026-03-17T12:00:00.000Z");
+      purchase(base.course.id, 100, "2026-03-18T00:00:00.000Z");
+      purchase(base.course.id, 200, "2026-03-22T23:00:00.000Z");
+      purchase(base.course.id, 400, "2026-03-23T01:00:00.000Z");
+      enroll(base.course.id, false, "2026-06-15T01:00:00.000Z");
+
+      const trend = getRevenueTrend(base.instructor.id, "90d");
+
+      expect(trend).toHaveLength(14);
+      expect(trend.slice(0, 3)).toEqual([
+        { bucketStart: "2026-03-16", revenue: 300, enrollments: 0 },
+        { bucketStart: "2026-03-23", revenue: 400, enrollments: 0 },
+        { bucketStart: "2026-03-30", revenue: 0, enrollments: 0 },
+      ]);
+      expect(trend[13]).toEqual({
+        bucketStart: "2026-06-15",
+        revenue: 0,
+        enrollments: 1,
+      });
+    });
+
+    it("buckets all time by month from the first activity", () => {
+      enroll(base.course.id, false, "2026-02-27T10:00:00.000Z");
+      purchase(base.course.id, 100, "2026-03-31T23:59:00.000Z");
+      purchase(base.course.id, 200, "2026-06-01T00:00:00.000Z");
+      // Draft activity doesn't extend the range
+      purchase(
+        createCourse(schema.CourseStatus.Draft).id,
+        999,
+        "2025-01-01T00:00:00.000Z"
+      );
+
+      expect(getRevenueTrend(base.instructor.id, "all")).toEqual([
+        { bucketStart: "2026-02-01", revenue: 0, enrollments: 1 },
+        { bucketStart: "2026-03-01", revenue: 100, enrollments: 0 },
+        { bucketStart: "2026-04-01", revenue: 0, enrollments: 0 },
+        { bucketStart: "2026-05-01", revenue: 0, enrollments: 0 },
+        { bucketStart: "2026-06-01", revenue: 200, enrollments: 0 },
+      ]);
+    });
+
+    it("shows the current month alone for all time with no activity", () => {
+      expect(getRevenueTrend(base.instructor.id, "all")).toEqual([
+        { bucketStart: "2026-06-01", revenue: 0, enrollments: 0 },
+      ]);
     });
   });
 });

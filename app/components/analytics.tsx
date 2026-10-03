@@ -1,8 +1,20 @@
 import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
+import {
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { CourseStatus } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
+import type { TrendPoint } from "~/services/analyticsService";
 
 // ─── Analytics Display ───
 // Cards and formatters shared by the instructor analytics pages.
@@ -63,5 +75,71 @@ export function StatusBadge({ status }: { status: CourseStatus }) {
     >
       {status}
     </span>
+  );
+}
+
+/** A YYYY-MM-DD bucket start as a short label, e.g. "Jun 9" or "Jun 2026". */
+function formatBucket(bucketStart: string, monthly: boolean) {
+  return new Date(`${bucketStart}T00:00:00Z`).toLocaleDateString("en-US", {
+    timeZone: "UTC",
+    month: "short",
+    ...(monthly ? { year: "numeric" } : { day: "numeric" }),
+  });
+}
+
+/** Revenue as bars against the left axis, new enrollments as a line on the right. */
+export function TrendChart({
+  points,
+  monthly,
+}: {
+  points: TrendPoint[];
+  monthly: boolean;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={300}>
+      <ComposedChart data={points} margin={{ top: 8, right: 8, left: 8 }}>
+        <CartesianGrid strokeDasharray="3 3" vertical={false} />
+        <XAxis
+          dataKey="bucketStart"
+          tickFormatter={(value: string) => formatBucket(value, monthly)}
+          tick={{ fontSize: 12 }}
+          minTickGap={16}
+        />
+        <YAxis
+          yAxisId="revenue"
+          tickFormatter={(cents: number) => `$${Math.round(cents / 100)}`}
+          tick={{ fontSize: 12 }}
+        />
+        <YAxis
+          yAxisId="enrollments"
+          orientation="right"
+          allowDecimals={false}
+          tick={{ fontSize: 12 }}
+        />
+        <Tooltip
+          labelFormatter={(value) => formatBucket(String(value), monthly)}
+          formatter={(value, name) =>
+            name === "Revenue" ? formatRevenue(Number(value)) : value
+          }
+        />
+        <Legend />
+        <Bar
+          yAxisId="revenue"
+          dataKey="revenue"
+          name="Revenue"
+          fill="var(--color-chart-2)"
+          radius={[4, 4, 0, 0]}
+        />
+        <Line
+          yAxisId="enrollments"
+          dataKey="enrollments"
+          name="New enrollments"
+          stroke="var(--color-chart-1)"
+          strokeWidth={2}
+          dot={false}
+          type="monotone"
+        />
+      </ComposedChart>
+    </ResponsiveContainer>
   );
 }

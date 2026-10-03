@@ -1,5 +1,14 @@
-import { and, countDistinct, eq, gte, inArray, sql } from "drizzle-orm";
-import { union } from "drizzle-orm/sqlite-core";
+import {
+  and,
+  countDistinct,
+  eq,
+  gte,
+  inArray,
+  min,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import { union, type SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db } from "~/db";
 import {
   CourseStatus,
@@ -214,4 +223,187 @@ export function getCourseBreakdown(instructorId: number): CourseBreakdownRow[] {
       };
     })
     .sort((a, b) => b.revenue - a.revenue);
+}
+
+// ─── Ranges ───
+// An N-day range covers today plus the N-1 whole days before it, in UTC, so
+// "last 7 days" is seven full calendar days on the chart.
+
+export const ANALYTICS_RANGES = ["7d", "30d", "90d", "all"] as const;
+export type AnalyticsRange = (typeof ANALYTICS_RANGES)[number];
+
+const RANGE_DAYS: Record<AnalyticsRange, number | null> = {
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
+  all: null,
+};
+
+/** Midnight UTC on the first day of the range, or null for all time. */
+function rangeStart(range: AnalyticsRange) {
+  const days = RANGE_DAYS[range];
+  if (days === null) return null;
+  const start = new Date();
+  start.setUTCHours(0, 0, 0, 0);
+  start.setUTCDate(start.getUTCDate() - (days - 1));
+  return start.toISOString();
+}
+
+export function getRevenueInRange(instructorId: number, range: AnalyticsRange) {
+  const start = rangeStart(range);
+
+  const revenue = db
+    .select({ total: sql<number>`coalesce(sum(${purchases.amountPaid}), 0)` })
+    .from(purchases)
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(
+      and(
+        isIncludedCourseOf(instructorId),
+        start === null ? undefined : gte(purchases.createdAt, start)
+      )
+    )
+    .get();
+
+  return revenue?.total ?? 0;
+}
+
+// ─── Trend ───
+// Revenue and new enrollments over a range, one point per bucket. Buckets are
+// UTC days, ISO weeks (starting Monday) or calendar months, each keyed by its
+// first day as YYYY-MM-DD.
+
+type BucketSize = "day" | "week" | "month";
+
+const RANGE_BUCKET: Record<AnalyticsRange, BucketSize> = {
+  "7d": "day",
+  "30d": "day",
+  "90d": "week",
+  all: "month",
+};
+
+export type TrendPoint = {
+  bucketStart: string;
+  revenue: number;
+  enrollments: number;
+};
+
+/** The start of the bucket holding an ISO timestamp column, in SQL. */
+function bucketOf(column: SQLiteColumn, size: BucketSize): SQL<string> {
+  switch (size) {
+    case "day":
+      return sql<string>`date(${column})`;
+    case "week":
+      // 'weekday 1' moves forward to a Monday, so step back first
+      return sql<string>`date(${column}, '-6 days', 'weekday 1')`;
+    case "month":
+      return sql<string>`strftime('%Y-%m-01', ${column})`;
+  }
+}
+
+/** The same bucket start as bucketOf, computed in JavaScript. */
+function bucketStartOf(date: Date, size: BucketSize) {
+  const start = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  );
+  if (size === "week") {
+    const daysSinceMonday = (start.getUTCDay() + 6) % 7;
+    start.setUTCDate(start.getUTCDate() - daysSinceMonday);
+  } else if (size === "month") {
+    start.setUTCDate(1);
+  }
+  return start;
+}
+
+function nextBucket(date: Date, size: BucketSize) {
+  const next = new Date(date);
+  if (size === "day") next.setUTCDate(next.getUTCDate() + 1);
+  else if (size === "week") next.setUTCDate(next.getUTCDate() + 7);
+  else next.setUTCMonth(next.getUTCMonth() + 1);
+  return next;
+}
+
+export function getRevenueTrend(
+  instructorId: number,
+  range: AnalyticsRange
+): TrendPoint[] {
+  const size = RANGE_BUCKET[range];
+  const start = rangeStart(range);
+  const included = isIncludedCourseOf(instructorId);
+
+  const revenueBucket = bucketOf(purchases.createdAt, size);
+  const revenueByBucket = new Map(
+    db
+      .select({
+        bucket: revenueBucket,
+        total: sql<number>`sum(${purchases.amountPaid})`,
+      })
+      .from(purchases)
+      .innerJoin(courses, eq(purchases.courseId, courses.id))
+      .where(
+        and(
+          included,
+          start === null ? undefined : gte(purchases.createdAt, start)
+        )
+      )
+      .groupBy(revenueBucket)
+      .all()
+      .map((row) => [row.bucket, row.total])
+  );
+
+  const enrollmentBucket = bucketOf(enrollments.enrolledAt, size);
+  const enrollmentsByBucket = new Map(
+    db
+      .select({ bucket: enrollmentBucket, total: sql<number>`count(*)` })
+      .from(enrollments)
+      .innerJoin(courses, eq(enrollments.courseId, courses.id))
+      .where(
+        and(
+          included,
+          start === null ? undefined : gte(enrollments.enrolledAt, start)
+        )
+      )
+      .groupBy(enrollmentBucket)
+      .all()
+      .map((row) => [row.bucket, row.total])
+  );
+
+  // All time runs from the first purchase or enrollment, or just this month
+  const now = new Date();
+  const firstActivity =
+    start ?? earliestActivity(instructorId) ?? now.toISOString();
+
+  const points: TrendPoint[] = [];
+  for (
+    let bucket = bucketStartOf(new Date(firstActivity), size);
+    bucket <= now;
+    bucket = nextBucket(bucket, size)
+  ) {
+    const key = bucket.toISOString().slice(0, 10);
+    points.push({
+      bucketStart: key,
+      revenue: revenueByBucket.get(key) ?? 0,
+      enrollments: enrollmentsByBucket.get(key) ?? 0,
+    });
+  }
+  return points;
+}
+
+function earliestActivity(instructorId: number) {
+  const firstPurchase = db
+    .select({ at: min(purchases.createdAt) })
+    .from(purchases)
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(isIncludedCourseOf(instructorId))
+    .get()?.at;
+  const firstEnrollment = db
+    .select({ at: min(enrollments.enrolledAt) })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .where(isIncludedCourseOf(instructorId))
+    .get()?.at;
+
+  const candidates = [firstPurchase, firstEnrollment].filter(
+    (at): at is string => !!at
+  );
+  return candidates.length > 0 ? candidates.sort()[0] : null;
 }
