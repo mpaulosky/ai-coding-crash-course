@@ -6,13 +6,12 @@ import {
 } from "react-router";
 import type { Route } from "./+types/instructor.analytics";
 import {
-  ANALYTICS_RANGES,
   getCourseBreakdown,
   getInstructorOverview,
   getRevenueInRange,
   getRevenueTrend,
-  type AnalyticsRange,
 } from "~/services/analyticsService";
+import { ANALYTICS_RANGES, type AnalyticsRange } from "~/lib/analytics";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
