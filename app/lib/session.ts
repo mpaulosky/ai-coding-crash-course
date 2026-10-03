@@ -1,4 +1,5 @@
 import { createCookieSessionStorage } from "react-router";
+import { UserRole } from "~/db/schema";
 
 const sessionStorage = createCookieSessionStorage({
   cookie: {
@@ -45,4 +46,16 @@ export async function setDevCountry(request: Request, country: string | null) {
     session.unset("devCountry");
   }
   return sessionStorage.commitSession(session);
+}
+
+/**
+ * Where a user lands after signing in or switching user when no explicit
+ * redirectTo was given. Instructors land on their analytics; everyone else
+ * gets the caller's usual destination.
+ */
+export function defaultLandingPath(
+  role: UserRole | undefined,
+  fallback: string
+): string {
+  return role === UserRole.Instructor ? "/instructor/analytics" : fallback;
 }

@@ -112,7 +112,13 @@ export function DevUI({ users, currentUser, devCountry, countryTierInfo, countri
                 <Form
                   key={user.id}
                   method="post"
-                  action={`/api/switch-user?redirectTo=${encodeURIComponent(location.pathname + location.search)}`}
+                  action={
+                    // Switching to an instructor lands on their analytics, as a
+                    // real login does; everyone else stays on the current page.
+                    user.role === "instructor"
+                      ? "/api/switch-user"
+                      : `/api/switch-user?redirectTo=${encodeURIComponent(location.pathname + location.search)}`
+                  }
                 >
                   <input type="hidden" name="userId" value={user.id} />
                   <button

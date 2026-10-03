@@ -1,4 +1,12 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import {
+  sqliteTable,
+  text,
+  integer,
+  real,
+  index,
+  uniqueIndex,
+  type AnySQLiteColumn,
+} from "drizzle-orm/sqlite-core";
 
 export enum UserRole {
   Student = "student",
@@ -53,7 +61,9 @@ export const courses = sqliteTable("courses", {
   title: text("title").notNull(),
   slug: text("slug").notNull().unique(),
   description: text("description").notNull(),
-  salesCopy: text("sales_copy"),
+  notes: text("notes"),
+  // Markdown, non-empty. Enforced in courseService.
+  salesCopy: text("sales_copy").notNull(),
   instructorId: integer("instructor_id")
     .notNull()
     .references(() => users.id),
@@ -192,7 +202,7 @@ export const purchases = sqliteTable("purchases", {
   courseId: integer("course_id")
     .notNull()
     .references(() => courses.id),
-  pricePaid: integer("price_paid").notNull(),
+  amountPaid: integer("amount_paid").notNull(),
   country: text("country"),
   createdAt: text("created_at")
     .notNull()
@@ -238,6 +248,67 @@ export const coupons = sqliteTable("coupons", {
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+export const courseRatings = sqliteTable(
+  "course_ratings",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id),
+    courseId: integer("course_id")
+      .notNull()
+      .references(() => courses.id),
+    // Whole stars, 1–5. Enforced in courseRatingService.
+    rating: integer("rating").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    uniqueIndex("course_ratings_user_course_unique").on(
+      table.userId,
+      table.courseId
+    ),
+  ]
+);
+
+export const comments = sqliteTable(
+  "comments",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    lessonId: integer("lesson_id")
+      .notNull()
+      .references(() => lessons.id),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id),
+    // Null for a top-level comment. Replies are one level deep only — a parent
+    // must itself be top-level. Enforced in commentService.
+    parentId: integer("parent_id").references(
+      (): AnySQLiteColumn => comments.id
+    ),
+    // Markdown, 1–5000 chars. Enforced in commentService, rendered by
+    // renderComment (untrusted input — never renderMarkdown).
+    body: text("body").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    // Null until the author edits. An explicit column rather than comparing
+    // updatedAt to createdAt, which collide when both writes land in the same
+    // millisecond.
+    editedAt: text("edited_at"),
+    // Soft delete. Deleted top-level comments keep their replies readable.
+    deletedAt: text("deleted_at"),
+  },
+  (table) => [
+    index("comments_lesson_idx").on(table.lessonId),
+    index("comments_parent_idx").on(table.parentId),
+  ]
+);
 
 export const videoWatchEvents = sqliteTable("video_watch_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),

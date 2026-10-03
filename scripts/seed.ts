@@ -12,6 +12,7 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { calculatePppPrice } from "../app/lib/ppp";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,6 +46,8 @@ async function seed() {
 
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
+    DROP TABLE IF EXISTS comments;
+    DROP TABLE IF EXISTS course_ratings;
     DROP TABLE IF EXISTS video_watch_events;
     DROP TABLE IF EXISTS quiz_answers;
     DROP TABLE IF EXISTS quiz_attempts;
@@ -1403,6 +1406,190 @@ You've completed the Building REST APIs course. You now have the skills to build
 
   console.log("Created 7 enrollments.");
 
+  // ─── Course Ratings ───
+  // Star ratings from enrolled students only. Not everyone rates.
+  // Course 1 averages 4.3 (4 ratings), course 2 averages 4.5 (2 ratings).
+
+  db.insert(schema.courseRatings)
+    .values([
+      {
+        userId: students[0].id,
+        courseId: course1.id,
+        rating: 5,
+        createdAt: daysAgo(20),
+        updatedAt: daysAgo(20),
+      },
+      {
+        userId: students[1].id,
+        courseId: course1.id,
+        rating: 5,
+        createdAt: daysAgo(9),
+        updatedAt: daysAgo(9),
+      },
+      {
+        userId: students[2].id,
+        courseId: course1.id,
+        rating: 4,
+        createdAt: daysAgo(18),
+        updatedAt: daysAgo(18),
+      },
+      {
+        userId: students[4].id,
+        courseId: course1.id,
+        rating: 3,
+        createdAt: daysAgo(5),
+        updatedAt: daysAgo(5),
+      },
+      {
+        userId: students[0].id,
+        courseId: course2.id,
+        rating: 4,
+        createdAt: daysAgo(12),
+        updatedAt: daysAgo(12),
+      },
+      {
+        userId: students[3].id,
+        courseId: course2.id,
+        rating: 5,
+        createdAt: daysAgo(8),
+        updatedAt: daysAgo(8),
+      },
+    ])
+    .run();
+
+  console.log("Created 6 course ratings.");
+
+  // ─── Lesson Comments ───
+  // Covers every state the Q&A feature can be in, so the instructor queue and
+  // the lesson thread both have something real to render: answered threads,
+  // questions still waiting (two of them stale enough to flag), a question only
+  // another student replied to (still unanswered), an edited comment, and a
+  // deleted question kept as a tombstone because it has a reply.
+  // Only enrolled students comment.
+
+  function comment(values: typeof schema.comments.$inferInsert) {
+    const [row] = db.insert(schema.comments).values(values).returning().all();
+    return row;
+  }
+
+  // Answered: student asks, Sarah answers, student confirms.
+  const c1q1 = comment({
+    lessonId: course1LessonIds[2],
+    userId: students[0].id,
+    body: "I'm getting `tsc: command not found` when I run the compile step. Did I miss an install somewhere?",
+    createdAt: daysAgo(30),
+  });
+  comment({
+    lessonId: course1LessonIds[2],
+    userId: instructor1.id,
+    parentId: c1q1.id,
+    body: "That usually means TypeScript is installed locally but not on your PATH. Two options:\n\n```bash\nnpx tsc --version\n```\n\nor install it globally with `npm i -g typescript`. I'd stick with `npx` — it keeps the version pinned to the project.",
+    createdAt: daysAgo(29),
+  });
+  comment({
+    lessonId: course1LessonIds[2],
+    userId: students[0].id,
+    parentId: c1q1.id,
+    body: "`npx` did it. Thank you!",
+    createdAt: daysAgo(29),
+  });
+
+  // Waiting, and stale enough to flag amber in the queue.
+  comment({
+    lessonId: course1LessonIds[7],
+    userId: students[2].id,
+    body: "Why does this fail to infer? I expected `T` to come out as `string`.\n\n```typescript\nfunction first<T>(items: T[]): T {\n  return items[0];\n}\n\nconst x = first([]);\n```",
+    createdAt: daysAgo(6),
+  });
+
+  // Waiting, but posted today — should look calm in the queue.
+  comment({
+    lessonId: course1LessonIds[4],
+    userId: students[4].id,
+    body: "Is there a reason to prefer `interface` over `type` here, or is it purely style?",
+    createdAt: daysAgo(1),
+  });
+
+  // Another student replied, but no staff has — still counts as unanswered.
+  const c1q4 = comment({
+    lessonId: course1LessonIds[3],
+    userId: students[1].id,
+    body: "Does strict mode change anything about how this example behaves?",
+    createdAt: daysAgo(4),
+  });
+  comment({
+    lessonId: course1LessonIds[3],
+    userId: students[0].id,
+    parentId: c1q4.id,
+    body: "I think it only affects the null checks, but I'd like a second opinion too.",
+    createdAt: daysAgo(4),
+  });
+
+  // Edited by its author — renders an "(edited)" marker.
+  const c1q5 = comment({
+    lessonId: course1LessonIds[0],
+    userId: students[1].id,
+    body: "Coming from JavaScript, how much of this will feel familiar? (Edited to add: I've used JSDoc types before.)",
+    createdAt: daysAgo(40),
+    editedAt: daysAgo(39),
+  });
+  comment({
+    lessonId: course1LessonIds[0],
+    userId: instructor1.id,
+    parentId: c1q5.id,
+    body: "Most of it. If you've written JSDoc types you already understand the mental model — the syntax is just less noisy.",
+    createdAt: daysAgo(39),
+  });
+
+  // Deleted question that keeps its reply — renders as a tombstone.
+  const c1q6 = comment({
+    lessonId: course1LessonIds[1],
+    userId: students[4].id,
+    body: "Posted this on the wrong lesson, sorry!",
+    createdAt: daysAgo(12),
+    deletedAt: daysAgo(12),
+  });
+  comment({
+    lessonId: course1LessonIds[1],
+    userId: instructor1.id,
+    parentId: c1q6.id,
+    body: "No problem at all — asked and answered over on the generics lesson.",
+    createdAt: daysAgo(12),
+  });
+
+  // Course 2: waiting a long time.
+  comment({
+    lessonId: course2LessonIds[2],
+    userId: students[3].id,
+    body: "When would you return a 422 instead of a 400? The distinction still isn't clicking for me.",
+    createdAt: daysAgo(9),
+  });
+
+  // Course 2: answered by an admin rather than the owning instructor.
+  const c2q2 = comment({
+    lessonId: course2LessonIds[0],
+    userId: students[2].id,
+    body: "Are the example requests in this lesson hitting a real API, or is it all mocked?",
+    createdAt: daysAgo(14),
+  });
+  comment({
+    lessonId: course2LessonIds[0],
+    userId: admin.id,
+    parentId: c2q2.id,
+    body: "All mocked — nothing leaves your machine. The repo linked on the lesson has the fixtures.",
+    createdAt: daysAgo(13),
+  });
+
+  // An instructor's own top-level post never queues up as work for themselves.
+  comment({
+    lessonId: course2LessonIds[1],
+    userId: instructor2.id,
+    body: "Heads up: the status code table was updated this week to include 418. Refresh if you cached the old one.",
+    createdAt: daysAgo(7),
+  });
+
+  console.log("Created 15 lesson comments across 9 threads.");
+
   // ─── Lesson Progress ───
 
   // Helper to mark lessons as complete
@@ -1601,7 +1788,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     .values({
       userId: students[0].id, // Emma — bought course 1 individually
       courseId: course1.id,
-      pricePaid: 4999,
+      amountPaid: 4999,
       country: "US",
       createdAt: daysAgo(50),
     })
@@ -1612,7 +1799,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     .values({
       userId: students[0].id, // Emma — bought course 2 individually
       courseId: course2.id,
-      pricePaid: 5999,
+      amountPaid: 5999,
       country: "US",
       createdAt: daysAgo(40),
     })
@@ -1622,7 +1809,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     .values({
       userId: students[1].id, // James — bought course 1 with PPP discount (India)
       courseId: course1.id,
-      pricePaid: 2500,
+      amountPaid: 2500,
       country: "IN",
       createdAt: daysAgo(45),
     })
@@ -1632,7 +1819,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     .values({
       userId: students[2].id, // Olivia — bought course 1 individually
       courseId: course1.id,
-      pricePaid: 4999,
+      amountPaid: 4999,
       country: "US",
       createdAt: daysAgo(35),
     })
@@ -1642,7 +1829,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     .values({
       userId: students[4].id, // Sophia — bought course 1 individually
       courseId: course1.id,
-      pricePaid: 4999,
+      amountPaid: 4999,
       country: "US",
       createdAt: daysAgo(15),
     })
@@ -1674,7 +1861,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     .values({
       userId: bossy.id,
       courseId: course2.id,
-      pricePaid: 5999 * 5,
+      amountPaid: 5999 * 5,
       country: "US",
       createdAt: daysAgo(30),
     })
@@ -1727,16 +1914,256 @@ You've completed the Building REST APIs course. You now have the skills to build
     `Created 1 team with Bossy McBossface as admin, 1 team purchase, and ${seededCoupons.length} coupons (2 redeemed, 3 available).`
   );
 
+  // ─── Analytics Cohort ───
+  // A larger, older population of students so the instructor analytics have
+  // real numbers to show: purchases from a mix of PPP countries spread over
+  // about 12 months, lesson progress that drops off lesson by lesson, some
+  // completions, recent watch activity and ratings. A seeded PRNG keeps every
+  // reseed identical.
+
+  let prngState = 42;
+  function random() {
+    // mulberry32
+    prngState = (prngState + 0x6d2b79f5) | 0;
+    let t = prngState;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  function randomInt(min: number, max: number) {
+    return min + Math.floor(random() * (max - min + 1));
+  }
+  function pick<T>(items: T[]): T {
+    return items[Math.floor(random() * items.length)];
+  }
+
+  const firstNames = [
+    "Ava", "Noah", "Mia", "Lucas", "Isla", "Mateo", "Zara", "Ethan", "Priya",
+    "Kenji", "Amara", "Diego", "Freya", "Omar", "Lena", "Tomás", "Chloe",
+    "Ravi", "Nia", "Felix",
+  ];
+  const lastNames = [
+    "Okafor", "Silva", "Kowalski", "Nguyen", "Müller", "Sharma", "García",
+    "Tanaka", "Haddad", "Novak",
+  ];
+  // Weighted towards full-price countries, with every PPP tier represented
+  const cohortCountries = [
+    "US", "US", "US", "GB", "CA", "DE", "AU", "BR", "MX", "PL", "IN", "IN",
+    "ID", "PH", "NG", "KE",
+  ];
+
+  const cohortCourses = [
+    { course: course1, lessonIds: course1LessonIds },
+    { course: course2, lessonIds: course2LessonIds },
+  ];
+
+  const COHORT_SIZE = 40;
+  const cohort = db
+    .insert(schema.users)
+    .values(
+      Array.from({ length: COHORT_SIZE }, (_, i) => {
+        const first = firstNames[i % firstNames.length];
+        const last = lastNames[Math.floor(i / 4) % lastNames.length];
+        return {
+          name: `${first} ${last}`,
+          email: `${first}.${last}.${i + 1}@student.dev`
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[̀-ͯ]/g, ""),
+          role: UserRole.Student,
+          avatarUrl: `https://api.dicebear.com/9.x/avataaars/svg?seed=cohort${i + 1}`,
+          createdAt: daysAgo(370),
+        };
+      })
+    )
+    .returning()
+    .all();
+
+  // Progress through a course: each lesson is reached with a falling
+  // probability, so the funnel narrows the way real courses do. A student
+  // can't outpace the calendar — at most one lesson per day since enrolling.
+  function seedProgress(
+    userId: number,
+    lessonIds: number[],
+    enrolledDaysAgo: number
+  ) {
+    let completedCount = 0;
+    while (
+      completedCount < lessonIds.length &&
+      completedCount < enrolledDaysAgo &&
+      random() < (completedCount === 0 ? 0.9 : 0.93)
+    ) {
+      completedCount++;
+    }
+
+    // Spread completions from enrollment towards today
+    const span = Math.min(enrolledDaysAgo, completedCount * 3);
+    let lastCompletedDaysAgo = enrolledDaysAgo;
+    for (let i = 0; i < completedCount; i++) {
+      lastCompletedDaysAgo = Math.max(
+        0,
+        enrolledDaysAgo - Math.round(((i + 1) / completedCount) * span)
+      );
+      markComplete(userId, lessonIds[i], lastCompletedDaysAgo);
+    }
+    if (completedCount > 0 && completedCount < lessonIds.length) {
+      markInProgress(userId, lessonIds[completedCount]);
+    }
+
+    return { completedCount, lastCompletedDaysAgo };
+  }
+
+  let cohortEnrollments = 0;
+  let cohortPurchases = 0;
+  let cohortCompletions = 0;
+  let cohortRatings = 0;
+
+  function enrollCohortStudent(
+    userId: number,
+    target: (typeof cohortCourses)[number],
+    enrolledDaysAgo: number
+  ) {
+    const { completedCount, lastCompletedDaysAgo } = seedProgress(
+      userId,
+      target.lessonIds,
+      enrolledDaysAgo
+    );
+    const completed = completedCount === target.lessonIds.length;
+
+    db.insert(schema.enrollments)
+      .values({
+        userId,
+        courseId: target.course.id,
+        enrolledAt: daysAgo(enrolledDaysAgo),
+        completedAt: completed ? daysAgo(lastCompletedDaysAgo) : null,
+      })
+      .run();
+    cohortEnrollments++;
+    if (completed) cohortCompletions++;
+
+    // Recent learners also leave video activity on their current lesson
+    if (completedCount < target.lessonIds.length && lastCompletedDaysAgo <= 30) {
+      const watchDaysAgo = Math.max(0, lastCompletedDaysAgo - randomInt(0, 3));
+      addWatchEvent(userId, target.lessonIds[completedCount], "play", 0, watchDaysAgo);
+      addWatchEvent(userId, target.lessonIds[completedCount], "pause", randomInt(60, 400), watchDaysAgo);
+    }
+
+    // Students who got a few lessons in sometimes rate the course
+    if (completedCount >= 3 && random() < 0.45) {
+      const ratedDaysAgo = Math.max(0, lastCompletedDaysAgo - 1);
+      db.insert(schema.courseRatings)
+        .values({
+          userId,
+          courseId: target.course.id,
+          rating: completed ? randomInt(4, 5) : randomInt(2, 5),
+          createdAt: daysAgo(ratedDaysAgo),
+          updatedAt: daysAgo(ratedDaysAgo),
+        })
+        .run();
+      cohortRatings++;
+    }
+  }
+
+  // The first cohort students come through a team purchase below: an admin who
+  // buys the seats (and never enrolls) plus the students who redeem them
+  const TEAM_SEAT_HOLDERS = 2;
+  const teamAdmin = cohort[0];
+  const seatHolders = cohort.slice(1, 1 + TEAM_SEAT_HOLDERS);
+
+  for (const student of cohort.slice(1 + TEAM_SEAT_HOLDERS)) {
+    const country = pick(cohortCountries);
+    // Some students buy both courses
+    const targets = random() < 0.25 ? cohortCourses : [pick(cohortCourses)];
+    for (const target of targets) {
+      const enrolledDaysAgo = randomInt(1, 360);
+      db.insert(schema.purchases)
+        .values({
+          userId: student.id,
+          courseId: target.course.id,
+          amountPaid: calculatePppPrice(target.course.price, country),
+          country,
+          createdAt: daysAgo(enrolledDaysAgo),
+        })
+        .run();
+      cohortPurchases++;
+      enrollCohortStudent(student.id, target, enrolledDaysAgo);
+    }
+  }
+
+  // A second team: 4 seats of course 1, bought ~7 months ago in Great Britain.
+  // Two seats are redeemed; the other two stay open, so revenue counts the full
+  // purchase while enrollments count only the redeemed seats.
+  const TEAM_PURCHASE_DAYS_AGO = 210;
+  const [team2] = db
+    .insert(schema.teams)
+    .values({ createdAt: daysAgo(TEAM_PURCHASE_DAYS_AGO) })
+    .returning()
+    .all();
+
+  db.insert(schema.teamMembers)
+    .values({
+      teamId: team2.id,
+      userId: teamAdmin.id,
+      role: TeamMemberRole.Admin,
+      createdAt: daysAgo(TEAM_PURCHASE_DAYS_AGO),
+    })
+    .run();
+
+  const team2Seats = 4;
+  const [team2Purchase] = db
+    .insert(schema.purchases)
+    .values({
+      userId: teamAdmin.id,
+      courseId: course1.id,
+      amountPaid: calculatePppPrice(course1.price, "GB") * team2Seats,
+      country: "GB",
+      createdAt: daysAgo(TEAM_PURCHASE_DAYS_AGO),
+    })
+    .returning()
+    .all();
+  cohortPurchases++;
+
+  const team2Coupons = db
+    .insert(schema.coupons)
+    .values(
+      Array.from({ length: team2Seats }, (_, i) => ({
+        teamId: team2.id,
+        courseId: course1.id,
+        code: `TEAM-TS-SEAT${i + 1}`,
+        purchaseId: team2Purchase.id,
+        createdAt: daysAgo(TEAM_PURCHASE_DAYS_AGO),
+      }))
+    )
+    .returning()
+    .all();
+
+  seatHolders.forEach((holder, i) => {
+    const redeemedDaysAgo = TEAM_PURCHASE_DAYS_AGO - 2 - i;
+    db.update(schema.coupons)
+      .set({ redeemedByUserId: holder.id, redeemedAt: daysAgo(redeemedDaysAgo) })
+      .where(eq(schema.coupons.id, team2Coupons[i].id))
+      .run();
+    enrollCohortStudent(holder.id, cohortCourses[0], redeemedDaysAgo);
+  });
+
+  console.log(
+    `Created analytics cohort: ${cohort.length} students, ${cohortPurchases} purchases (1 team), ${cohortEnrollments} enrollments, ${cohortCompletions} completions, ${cohortRatings} ratings.`
+  );
+
   console.log("\n✓ Seed complete!");
-  console.log("  Users: 9 (1 admin, 2 instructors, 6 students)");
+  console.log(
+    `  Users: ${9 + cohort.length} (1 admin, 2 instructors, ${6 + cohort.length} students)`
+  );
   console.log("  Categories: 5");
   console.log(
     `  Courses: 2 (${course1LessonIds.length} + ${course2LessonIds.length} lessons)`
   );
   console.log("  Quizzes: 3");
-  console.log("  Enrollments: 7");
-  console.log("  Purchases: 6 (5 individual + 1 team)");
-  console.log("  Teams: 1 (with 5 coupons)");
+  console.log(`  Enrollments: ${7 + cohortEnrollments}`);
+  console.log(`  Course ratings: ${6 + cohortRatings}`);
+  console.log("  Lesson comments: 15 (4 questions awaiting an answer)");
+  console.log(`  Purchases: ${6 + cohortPurchases} (2 team)`);
+  console.log("  Teams: 2 (with 9 coupons)");
 }
 
 seed().catch(console.error);
