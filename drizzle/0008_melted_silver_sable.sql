@@ -10,7 +10,7 @@ CREATE TABLE `__new_comments` (
 	`deleted_at` text,
 	FOREIGN KEY (`lesson_id`) REFERENCES `lessons`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action,
-	FOREIGN KEY (`parent_id`) REFERENCES `comments`(`id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`parent_id`) REFERENCES `__new_comments`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
 INSERT INTO `__new_comments`("id", "lesson_id", "user_id", "parent_id", "body", "created_at", "edited_at", "deleted_at") SELECT "id", "lesson_id", "user_id", "parent_id", "body", "created_at", "edited_at", "deleted_at" FROM `comments`;--> statement-breakpoint

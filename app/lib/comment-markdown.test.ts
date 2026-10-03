@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { renderComment } from "./comment-markdown.server";
 
 describe("renderComment", () => {
@@ -131,14 +131,6 @@ describe("renderComment", () => {
       expect(html).not.toContain("<a ");
     });
 
-    it("renders concurrent comments with a shared highlighter", async () => {
-      const htmls = await Promise.all(
-        Array.from({ length: 5 }, () => renderComment("```ts\nconst x = 1;\n```"))
-      );
-
-      for (const html of htmls) expect(html).toContain("shiki");
-    });
-
     it("escapes quotes in a link title", async () => {
       const html = await renderComment(
         '[x](https://example.test "a" onmouseover="alert(1)")'
@@ -160,6 +152,42 @@ describe("renderComment", () => {
 
       expect(html).not.toContain("<img");
       expect(html).toContain("tracking");
+    });
+  });
+
+  describe("highlighter", () => {
+    it("initialises once for concurrent first renders", async () => {
+      // A fresh module, so the highlighter cache starts empty, with Shiki's
+      // initialisation held open until every render has asked for it.
+      vi.resetModules();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const createHighlighter = vi.fn();
+      vi.doMock("shiki", async (importOriginal) => {
+        const shiki = await importOriginal<typeof import("shiki")>();
+        createHighlighter.mockImplementation(async (...args) => {
+          await gate;
+          return shiki.createHighlighter(...(args as Parameters<typeof shiki.createHighlighter>));
+        });
+        return { ...shiki, createHighlighter };
+      });
+
+      try {
+        const fresh = await import("./comment-markdown.server");
+        const renders = Array.from({ length: 5 }, () =>
+          fresh.renderComment("```ts\nconst x = 1;\n```")
+        );
+        await vi.waitFor(() => expect(createHighlighter).toHaveBeenCalled());
+
+        release();
+        const htmls = await Promise.all(renders);
+
+        expect(createHighlighter).toHaveBeenCalledTimes(1);
+        for (const html of htmls) expect(html).toContain("shiki");
+      } finally {
+        vi.doUnmock("shiki");
+        vi.resetModules();
+      }
     });
   });
 });
