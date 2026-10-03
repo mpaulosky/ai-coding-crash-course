@@ -537,6 +537,20 @@ describe("analyticsService", () => {
       expect(getRevenueInRange(base.instructor.id, "7d")).toBe(300);
     });
 
+    it("covers today and the 29 days before it for the last 30 days", () => {
+      purchase(base.course.id, 100, "2026-05-17T00:00:00.000Z");
+      purchase(base.course.id, 400, "2026-05-16T23:59:59.999Z");
+
+      expect(getRevenueInRange(base.instructor.id, "30d")).toBe(100);
+    });
+
+    it("covers today and the 89 days before it for the last 90 days", () => {
+      purchase(base.course.id, 100, "2026-03-18T00:00:00.000Z");
+      purchase(base.course.id, 400, "2026-03-17T23:59:59.999Z");
+
+      expect(getRevenueInRange(base.instructor.id, "90d")).toBe(100);
+    });
+
     it("covers every purchase for all time, in included courses only", () => {
       purchase(base.course.id, 100, "2020-01-01T00:00:00.000Z");
       purchase(base.course.id, 200, daysAgo(1));
@@ -722,7 +736,7 @@ describe("analyticsService", () => {
       }
       completeLesson(students[0].id, b2.id, daysAgo(10));
 
-      const funnel = getCourseFunnel(base.course.id);
+      const funnel = getCourseFunnel(base.instructor.id, base.course.id)!;
 
       expect(funnel.enrolled).toBe(4);
       expect(funnel.steps).toEqual([
@@ -782,7 +796,7 @@ describe("analyticsService", () => {
       // Completed, but not enrolled in the course
       completeLesson(createStudent().id, lesson.id, daysAgo(1));
 
-      const [step] = getCourseFunnel(base.course.id).steps;
+      const [step] = getCourseFunnel(base.instructor.id, base.course.id)!.steps;
 
       expect(step).toMatchObject({ completed: 1, percent: 50, drop: 50 });
     });
@@ -800,7 +814,9 @@ describe("analyticsService", () => {
         completeLesson(student.id, l2.id, daysAgo(1));
       completeLesson(students[0].id, l3.id, daysAgo(1));
 
-      expect(getCourseFunnel(base.course.id).largestDropLessonId).toBe(l3.id);
+      expect(
+        getCourseFunnel(base.instructor.id, base.course.id)!.largestDropLessonId
+      ).toBe(l3.id);
     });
 
     it("picks the earliest lesson when drops tie", () => {
@@ -810,20 +826,24 @@ describe("analyticsService", () => {
       const students = [1, 2].map(() => enrollStudent(base.course.id));
       completeLesson(students[0].id, l1.id, daysAgo(1));
 
-      expect(getCourseFunnel(base.course.id).largestDropLessonId).toBe(l1.id);
+      expect(
+        getCourseFunnel(base.instructor.id, base.course.id)!.largestDropLessonId
+      ).toBe(l1.id);
     });
 
     it("calls out no lesson when nobody drops", () => {
       const lesson = addLesson(addModule("Only", 1).id, "L1", 1);
       completeLesson(enrollStudent(base.course.id).id, lesson.id, daysAgo(1));
 
-      expect(getCourseFunnel(base.course.id).largestDropLessonId).toBeNull();
+      expect(
+        getCourseFunnel(base.instructor.id, base.course.id)!.largestDropLessonId
+      ).toBeNull();
     });
 
     it("handles a course with no enrollments", () => {
       const lesson = addLesson(addModule("Only", 1).id, "L1", 1);
 
-      expect(getCourseFunnel(base.course.id)).toEqual({
+      expect(getCourseFunnel(base.instructor.id, base.course.id)).toEqual({
         enrolled: 0,
         steps: [
           expect.objectContaining({
@@ -835,6 +855,28 @@ describe("analyticsService", () => {
         ],
         largestDropLessonId: null,
       });
+    });
+
+    it("has nothing for a draft or another instructor's course", () => {
+      const other = testDb
+        .insert(schema.users)
+        .values({
+          name: "Other Instructor",
+          email: "other@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+      const draft = createCourse(schema.CourseStatus.Draft);
+      const othersCourse = createCourse(
+        schema.CourseStatus.Published,
+        other.id
+      );
+
+      expect(getCourseFunnel(base.instructor.id, draft.id)).toBeUndefined();
+      expect(
+        getCourseFunnel(base.instructor.id, othersCourse.id)
+      ).toBeUndefined();
     });
   });
 });

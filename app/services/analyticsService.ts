@@ -291,65 +291,76 @@ export function getRevenueInRange(instructorId: number, range: AnalyticsRange) {
 // UTC days, ISO weeks (starting Monday) or calendar months, each keyed by its
 // first day as YYYY-MM-DD.
 
-type BucketSize = "day" | "week" | "month";
-
-const RANGE_BUCKET: Record<AnalyticsRange, BucketSize> = {
-  "7d": "day",
-  "30d": "day",
-  "90d": "week",
-  all: "month",
-};
-
 export type TrendPoint = {
   bucketStart: string;
   revenue: number;
   enrollments: number;
 };
 
-/** The start of the bucket holding an ISO timestamp column, in SQL. */
-function bucketOf(column: SQLiteColumn, size: BucketSize): SQL<string> {
-  switch (size) {
-    case "day":
-      return sql<string>`date(${column})`;
-    case "week":
-      // 'weekday 1' moves forward to a Monday, so step back first
-      return sql<string>`date(${column}, '-6 days', 'weekday 1')`;
-    case "month":
-      return sql<string>`strftime('%Y-%m-01', ${column})`;
-  }
-}
+/**
+ * One bucket size, defined in one place: where a timestamp column's bucket
+ * starts in SQL, where a date's bucket starts in JavaScript (these two must
+ * agree), and how to step to the next bucket.
+ */
+type Bucket = {
+  ofColumn: (column: SQLiteColumn) => SQL<string>;
+  startOf: (date: Date) => Date;
+  next: (start: Date) => Date;
+};
 
-/** The same bucket start as bucketOf, computed in JavaScript. */
-function bucketStartOf(date: Date, size: BucketSize) {
-  const start = new Date(
+function utcMidnight(date: Date) {
+  return new Date(
     Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
   );
-  if (size === "week") {
-    const daysSinceMonday = (start.getUTCDay() + 6) % 7;
-    start.setUTCDate(start.getUTCDate() - daysSinceMonday);
-  } else if (size === "month") {
-    start.setUTCDate(1);
-  }
-  return start;
 }
 
-function nextBucket(date: Date, size: BucketSize) {
-  const next = new Date(date);
-  if (size === "day") next.setUTCDate(next.getUTCDate() + 1);
-  else if (size === "week") next.setUTCDate(next.getUTCDate() + 7);
-  else next.setUTCMonth(next.getUTCMonth() + 1);
-  return next;
+function addUtcDays(date: Date, days: number) {
+  const result = new Date(date);
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
 }
+
+const DAY: Bucket = {
+  ofColumn: (column) => sql<string>`date(${column})`,
+  startOf: utcMidnight,
+  next: (start) => addUtcDays(start, 1),
+};
+
+const WEEK: Bucket = {
+  // 'weekday 1' moves forward to a Monday, so step back first
+  ofColumn: (column) => sql<string>`date(${column}, '-6 days', 'weekday 1')`,
+  startOf: (date) => {
+    const day = utcMidnight(date);
+    const daysSinceMonday = (day.getUTCDay() + 6) % 7;
+    return addUtcDays(day, -daysSinceMonday);
+  },
+  next: (start) => addUtcDays(start, 7),
+};
+
+const MONTH: Bucket = {
+  ofColumn: (column) => sql<string>`strftime('%Y-%m-01', ${column})`,
+  startOf: (date) =>
+    new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)),
+  next: (start) =>
+    new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1)),
+};
+
+const RANGE_BUCKET: Record<AnalyticsRange, Bucket> = {
+  "7d": DAY,
+  "30d": DAY,
+  "90d": WEEK,
+  all: MONTH,
+};
 
 export function getRevenueTrend(
   instructorId: number,
   range: AnalyticsRange
 ): TrendPoint[] {
-  const size = RANGE_BUCKET[range];
+  const bucket = RANGE_BUCKET[range];
   const start = rangeStart(range);
   const included = isIncludedCourseOf(instructorId);
 
-  const revenueBucket = bucketOf(purchases.createdAt, size);
+  const revenueBucket = bucket.ofColumn(purchases.createdAt);
   const revenueByBucket = new Map(
     db
       .select({
@@ -369,7 +380,7 @@ export function getRevenueTrend(
       .map((row) => [row.bucket, row.total])
   );
 
-  const enrollmentBucket = bucketOf(enrollments.enrolledAt, size);
+  const enrollmentBucket = bucket.ofColumn(enrollments.enrolledAt);
   const enrollmentsByBucket = new Map(
     db
       .select({ bucket: enrollmentBucket, total: sql<number>`count(*)` })
@@ -393,11 +404,11 @@ export function getRevenueTrend(
 
   const points: TrendPoint[] = [];
   for (
-    let bucket = bucketStartOf(new Date(firstActivity), size);
-    bucket <= now;
-    bucket = nextBucket(bucket, size)
+    let start = bucket.startOf(new Date(firstActivity));
+    start <= now;
+    start = bucket.next(start)
   ) {
-    const key = bucket.toISOString().slice(0, 10);
+    const key = start.toISOString().slice(0, 10);
     points.push({
       bucketStart: key,
       revenue: revenueByBucket.get(key) ?? 0,
@@ -444,7 +455,15 @@ export type FunnelStep = {
   drop: number | null;
 };
 
-export function getCourseFunnel(courseId: number) {
+/** Undefined unless the course is one of the instructor's included courses. */
+export function getCourseFunnel(instructorId: number, courseId: number) {
+  const course = db
+    .select({ id: courses.id })
+    .from(courses)
+    .where(and(isIncludedCourseOf(instructorId), eq(courses.id, courseId)))
+    .get();
+  if (!course) return undefined;
+
   const enrolled =
     db
       .select({ total: sql<number>`count(*)` })

@@ -77,15 +77,16 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   }
 
   const summary = getCourseSummary(currentUserId, courseId);
+  const funnel = getCourseFunnel(currentUserId, courseId);
 
   // Drafts are left out of analytics until they're released
-  if (!summary) {
+  if (!summary || !funnel) {
     throw data("Analytics are available once a course is published.", {
       status: 404,
     });
   }
 
-  return { summary, funnel: getCourseFunnel(courseId) };
+  return { summary, funnel };
 }
 
 /** Consecutive steps that share a module, in funnel order. */
