@@ -12,7 +12,7 @@ vi.mock("~/db", () => ({
 }));
 
 // Import after mock so the module picks up our test db
-import { getInstructorOverview } from "./analyticsService";
+import { getCourseBreakdown, getInstructorOverview } from "./analyticsService";
 
 let studentCount = 0;
 
@@ -68,6 +68,13 @@ function enroll(courseId: number, completed = false) {
       courseId,
       completedAt: completed ? new Date().toISOString() : null,
     })
+    .run();
+}
+
+function rate(courseId: number, rating: number) {
+  testDb
+    .insert(schema.courseRatings)
+    .values({ userId: createStudent().id, courseId, rating })
     .run();
 }
 
@@ -218,6 +225,80 @@ describe("analyticsService", () => {
         totalStudents: 0,
         completionRate: null,
       });
+    });
+  });
+
+  describe("getCourseBreakdown", () => {
+    it("reports revenue, enrollments, completion and rating for a course", () => {
+      purchase(base.course.id, 4999);
+      purchase(base.course.id, 2500);
+      enroll(base.course.id, true);
+      enroll(base.course.id);
+      enroll(base.course.id);
+      enroll(base.course.id);
+      rate(base.course.id, 5);
+      rate(base.course.id, 4);
+
+      const [row] = getCourseBreakdown(base.instructor.id);
+
+      expect(row).toEqual({
+        id: base.course.id,
+        title: base.course.title,
+        status: schema.CourseStatus.Published,
+        revenue: 7499,
+        enrollments: 4,
+        completionRate: 0.25,
+        averageRating: 4.5,
+        ratingCount: 2,
+      });
+    });
+
+    it("sorts courses by revenue, highest first", () => {
+      const small = createCourse(schema.CourseStatus.Published);
+      const big = createCourse(schema.CourseStatus.Archived);
+      purchase(small.id, 100);
+      purchase(big.id, 9000);
+      purchase(base.course.id, 500);
+
+      const rows = getCourseBreakdown(base.instructor.id);
+
+      expect(rows.map((row) => row.id)).toEqual([big.id, base.course.id, small.id]);
+    });
+
+    it("reports no rating and no completion rate for an untouched course", () => {
+      const [row] = getCourseBreakdown(base.instructor.id);
+
+      expect(row).toMatchObject({
+        revenue: 0,
+        enrollments: 0,
+        completionRate: null,
+        averageRating: null,
+        ratingCount: 0,
+      });
+    });
+
+    it("lists only the instructor's published and archived courses", () => {
+      const draft = createCourse(schema.CourseStatus.Draft);
+      const archived = createCourse(schema.CourseStatus.Archived);
+      const other = testDb
+        .insert(schema.users)
+        .values({
+          name: "Other Instructor",
+          email: "other@example.com",
+          role: schema.UserRole.Instructor,
+        })
+        .returning()
+        .get();
+      const othersCourse = createCourse(schema.CourseStatus.Published, other.id);
+      purchase(draft.id, 1000);
+      purchase(othersCourse.id, 1000);
+      rate(othersCourse.id, 1);
+
+      const rows = getCourseBreakdown(base.instructor.id);
+
+      expect(rows.map((row) => row.id).sort()).toEqual(
+        [base.course.id, archived.id].sort()
+      );
     });
   });
 });

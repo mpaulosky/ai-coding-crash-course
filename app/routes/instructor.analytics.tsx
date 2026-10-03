@@ -1,6 +1,9 @@
 import { Link, data, isRouteErrorResponse } from "react-router";
 import type { Route } from "./+types/instructor.analytics";
-import { getInstructorOverview } from "~/services/analyticsService";
+import {
+  getCourseBreakdown,
+  getInstructorOverview,
+} from "~/services/analyticsService";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -14,7 +17,13 @@ import {
   Plus,
   Users,
 } from "lucide-react";
-import { formatPrice } from "~/lib/utils";
+import {
+  StatCard,
+  StatusBadge,
+  formatRate,
+  formatRating,
+  formatRevenue,
+} from "~/components/analytics";
 import { UserRole } from "~/db/schema";
 
 // ─── Instructor Analytics Overview ───
@@ -45,31 +54,10 @@ export async function loader({ request }: Route.LoaderArgs) {
     });
   }
 
-  return { overview: getInstructorOverview(currentUserId) };
-}
-
-function StatCard({
-  title,
-  value,
-  icon: Icon,
-}: {
-  title: string;
-  value: string;
-  icon: typeof DollarSign;
-}) {
-  return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {title}
-        </CardTitle>
-        <Icon className="size-4 text-muted-foreground" />
-      </CardHeader>
-      <CardContent>
-        <div className="text-3xl font-bold">{value}</div>
-      </CardContent>
-    </Card>
-  );
+  return {
+    overview: getInstructorOverview(currentUserId),
+    breakdown: getCourseBreakdown(currentUserId),
+  };
 }
 
 export function HydrateFallback() {
@@ -99,7 +87,7 @@ export function HydrateFallback() {
 export default function InstructorAnalytics({
   loaderData,
 }: Route.ComponentProps) {
-  const { overview } = loaderData;
+  const { overview, breakdown } = loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -141,7 +129,7 @@ export default function InstructorAnalytics({
         <div className="grid gap-6 sm:grid-cols-3">
           <StatCard
             title="Gross revenue"
-            value={formatPrice(overview.grossRevenue)}
+            value={formatRevenue(overview.grossRevenue)}
             icon={DollarSign}
           />
           <StatCard
@@ -151,14 +139,68 @@ export default function InstructorAnalytics({
           />
           <StatCard
             title="Completion rate"
-            value={
-              overview.completionRate === null
-                ? "No data"
-                : `${Math.round(overview.completionRate * 100)}%`
-            }
+            value={formatRate(overview.completionRate)}
             icon={CheckCircle2}
           />
         </div>
+      )}
+
+      {breakdown.length > 0 && (
+        <Card className="mt-8">
+          <CardHeader>
+            <CardTitle>Courses</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-border bg-muted/50">
+                    {[
+                      "Course",
+                      "Status",
+                      "Revenue",
+                      "Enrollments",
+                      "Completion",
+                      "Rating",
+                    ].map((heading) => (
+                      <th
+                        key={heading}
+                        className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground"
+                      >
+                        {heading}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {breakdown.map((course) => (
+                    <tr
+                      key={course.id}
+                      className="border-b border-border last:border-0"
+                    >
+                      <td className="px-4 py-3 font-medium">{course.title}</td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={course.status} />
+                      </td>
+                      <td className="px-4 py-3">
+                        {formatRevenue(course.revenue)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {course.enrollments.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3">
+                        {formatRate(course.completionRate)}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {formatRating(course.averageRating, course.ratingCount)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
