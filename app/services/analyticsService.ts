@@ -24,6 +24,7 @@ import {
   videoWatchEvents,
 } from "~/db/schema";
 import { getUnansweredQuestions } from "~/services/commentService";
+import type { AnalyticsRange } from "~/lib/analytics";
 
 // ─── Analytics Service ───
 // Instructor analytics, computed on demand with SQL aggregates.
@@ -247,9 +248,6 @@ function breakdownRows(
 // ─── Ranges ───
 // An N-day range covers today plus the N-1 whole days before it, in UTC, so
 // "last 7 days" is seven full calendar days on the chart.
-
-export const ANALYTICS_RANGES = ["7d", "30d", "90d", "all"] as const;
-export type AnalyticsRange = (typeof ANALYTICS_RANGES)[number];
 
 const RANGE_DAYS: Record<AnalyticsRange, number | null> = {
   "7d": 7,

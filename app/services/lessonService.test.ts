@@ -188,6 +188,28 @@ describe("lessonService", () => {
 
       expect(getLessonById(lesson.id)).toBeUndefined();
     });
+
+    it("deletes a lesson that has comments and replies, and removes them", () => {
+      const lesson = createLesson(moduleId, "Discussed", null, null, 1, null);
+      const parent = testDb
+        .insert(schema.comments)
+        .values({ lessonId: lesson.id, userId: base.user.id, body: "Question" })
+        .returning()
+        .get();
+      testDb
+        .insert(schema.comments)
+        .values({
+          lessonId: lesson.id,
+          userId: base.instructor.id,
+          parentId: parent.id,
+          body: "Answer",
+        })
+        .run();
+
+      expect(deleteLesson(lesson.id)).toBeDefined();
+
+      expect(testDb.select().from(schema.comments).all()).toHaveLength(0);
+    });
   });
 
   // ─── Reordering ───

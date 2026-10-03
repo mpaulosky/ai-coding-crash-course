@@ -17,9 +17,9 @@ Don't mock:
 
 At system boundaries, design interfaces that are easy to mock:
 
-**1. Use dependency injection**
+**1. Use dependency injection for external services**
 
-Pass external dependencies in rather than creating them internally:
+Pass external dependencies in rather than creating them internally. This applies to third-party clients (payment, email, HTTP APIs) — **not** to the database. Services in this repo import the shared `db` and tests substitute it by mocking `~/db` (see the `testing-services` skill); don't refactor a service to take a database handle.
 
 ```typescript
 // Easy to mock

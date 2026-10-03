@@ -338,6 +338,15 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("Course not found", { status: 404 });
   }
 
+  // Access below is derived from the slug's course, so the lesson must belong
+  // to it — otherwise staff on one course could post another course's lesson
+  // and comment ids here and moderate them.
+  const lesson = getLessonById(lessonId);
+  const mod = lesson ? getModuleById(lesson.moduleId) : undefined;
+  if (!lesson || !mod || mod.courseId !== course.id) {
+    throw data("Lesson not found in this course", { status: 404 });
+  }
+
   const currentUserId = await getCurrentUserId(request);
   if (!currentUserId) {
     throw data("You must be logged in", { status: 401 });
