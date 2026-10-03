@@ -1,7 +1,8 @@
 import { redirect } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/api.switch-user";
-import { setCurrentUserId } from "~/lib/session";
+import { setCurrentUserId, defaultLandingPath } from "~/lib/session";
+import { getUserById } from "~/services/userService";
 import { parseFormData } from "~/lib/validation";
 
 const switchUserSchema = z.object({
@@ -18,7 +19,11 @@ export async function action({ request, url }: Route.ActionArgs) {
 
   const cookie = await setCurrentUserId(request, parsed.data.userId);
 
-  return redirect(url.searchParams.get("redirectTo") ?? "/", {
+  const redirectTo =
+    url.searchParams.get("redirectTo") ??
+    defaultLandingPath(getUserById(parsed.data.userId)?.role, "/");
+
+  return redirect(redirectTo, {
     headers: { "Set-Cookie": cookie },
   });
 }
